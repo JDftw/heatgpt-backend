@@ -1,12 +1,21 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from datetime import datetime
 import openai
 import requests
+import os
+from dotenv import load_dotenv
+
+# Load .env file
+load_dotenv()
+
+# OpenAI API key from environment variable
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
-# CORS for frontend access (e.g., CodePen)
+# Allow all frontend origins (e.g. CodePen, local dev)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,16 +24,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Set your OpenAI key
-openai.api_key = "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"  # <--- your API key here
-
-# Input format
+# Request format
 class CompareRequest(BaseModel):
     origin: str
     destination: str
     month: str
 
-# Simple geocoding (Open-Meteo API)
+# Geocode a place name to lat/lon
 def get_coords(place):
     res = requests.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": place})
     results = res.json().get("results")
@@ -32,46 +38,51 @@ def get_coords(place):
         return None
     return results[0]["latitude"], results[0]["longitude"]
 
-# Fetch daily temperature from Open-Meteo (historical)
-def get_weather_data(lat, lon, month):
+# Fetch weather data from Open-Meteo
+def get_weather_data(lat, lon, month_str):
     return requests.get("https://archive-api.open-meteo.com/v1/archive", params={
         "latitude": lat,
         "longitude": lon,
-        "start_date": f"2023-{month.lower()}-01",
-        "end_date": f"2023-{month.lower()}-28",
+        "start_date": f"2023-{month_str}-01",
+        "end_date": f"2023-{month_str}-28",
         "daily": "temperature_2m_max,temperature_2m_min",
         "timezone": "auto"
     }).json()
 
-from datetime import datetime
-
+# POST endpoint
 @app.post("/compare")
 def compare(req: CompareRequest):
-    # Convert month name to number (e.g., July -> 07)
+    print("🔍 Received request:", req.dict())
+
+    # Parse month to number
     try:
         month_number = datetime.strptime(req.month, "%B").month
         month_str = str(month_number).zfill(2)
-    except ValueError:
-        return {"error": "Invalid month format. Use full month name like 'July'."}
+    except ValueError as e:
+        print("❌ Month error:", e)
+        return {"error": "Invalid month. Use full month name like 'July'."}
 
     origin_coords = get_coords(req.origin)
     dest_coords = get_coords(req.destination)
 
     if not origin_coords or not dest_coords:
-        return {"error": "Unable to find coordinates for one of the locations."}
+        print("❌ Failed geocoding.")
+        return {"error": "Could not find coordinates."}
 
     try:
         origin_data = get_weather_data(*origin_coords, month_str)
         destination_data = get_weather_data(*dest_coords, month_str)
+        print("✅ Weather data fetched.")
     except Exception as e:
-        return {"error": f"Failed to fetch weather data: {str(e)}"}
+        print("❌ Weather API error:", e)
+        return {"error": f"Weather fetch failed: {str(e)}"}
 
     try:
         gpt_prompt = f"""
 Compare the climate between {req.origin} and {req.destination} in {req.month} based on this data:
 
-{req.origin} max temps: {origin_data['daily']['temperature_2m_max'][:5]}
-{req.destination} max temps: {destination_data['daily']['temperature_2m_max'][:5]}
+{req.origin} max temps: {origin_data['daily'].get('temperature_2m_max', [])[:5]}
+{req.destination} max temps: {destination_data['daily'].get('temperature_2m_max', [])[:5]}
 
 Summarize how they compare in terms of heat and comfort.
 """
@@ -84,7 +95,9 @@ Summarize how they compare in terms of heat and comfort.
             ]
         )
         summary = gpt_response["choices"][0]["message"]["content"]
+        print("✅ GPT responded.")
     except Exception as e:
+        print("❌ GPT API error:", e)
         return {"error": f"OpenAI API error: {str(e)}"}
 
     return {
