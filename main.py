@@ -16,7 +16,7 @@ app.add_middleware(
 )
 
 # Set your OpenAI key
-openai.api_key = "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"  # <--- your API key here
+openai.api_key = "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"  # <--- your API key here
 
 # Input format
 class CompareRequest(BaseModel):
