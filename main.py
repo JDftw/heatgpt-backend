@@ -7,30 +7,28 @@ import requests
 import os
 from dotenv import load_dotenv
 
-# Load .env file
+# Load environment variables
 load_dotenv()
-
-# OpenAI API key from environment variable
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 app = FastAPI()
 
-# Allow all frontend origins (e.g. CodePen, local dev)
+# Enable CORS (for frontend access like CodePen or local dev)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # You can restrict this to your frontend domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Request format
+# Request body schema
 class CompareRequest(BaseModel):
     origin: str
     destination: str
     month: str
 
-# Geocode a place name to lat/lon
+# Get coordinates using Open-Meteo's geocoding API
 def get_coords(place):
     res = requests.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": place})
     results = res.json().get("results")
@@ -38,7 +36,7 @@ def get_coords(place):
         return None
     return results[0]["latitude"], results[0]["longitude"]
 
-# Fetch weather data from Open-Meteo
+# Get historical temperature data
 def get_weather_data(lat, lon, month_str):
     return requests.get("https://archive-api.open-meteo.com/v1/archive", params={
         "latitude": lat,
@@ -49,34 +47,37 @@ def get_weather_data(lat, lon, month_str):
         "timezone": "auto"
     }).json()
 
-# POST endpoint
+# Compare endpoint
 @app.post("/compare")
 def compare(req: CompareRequest):
     print("🔍 Received request:", req.dict())
 
-    # Parse month to number
+    # Convert month to MM format
     try:
         month_number = datetime.strptime(req.month, "%B").month
         month_str = str(month_number).zfill(2)
     except ValueError as e:
-        print("❌ Month error:", e)
-        return {"error": "Invalid month. Use full month name like 'July'."}
+        print("❌ Invalid month format:", e)
+        return {"error": "Invalid month. Use full name like 'July'."}
 
+    # Geocode both locations
     origin_coords = get_coords(req.origin)
     dest_coords = get_coords(req.destination)
 
     if not origin_coords or not dest_coords:
-        print("❌ Failed geocoding.")
-        return {"error": "Could not find coordinates."}
+        print("❌ Geocoding failed.")
+        return {"error": "Could not find coordinates for one or both locations."}
 
+    # Fetch weather data
     try:
         origin_data = get_weather_data(*origin_coords, month_str)
         destination_data = get_weather_data(*dest_coords, month_str)
         print("✅ Weather data fetched.")
     except Exception as e:
         print("❌ Weather API error:", e)
-        return {"error": f"Weather fetch failed: {str(e)}"}
+        return {"error": f"Weather data fetch failed: {str(e)}"}
 
+    # Ask GPT to compare them
     try:
         gpt_prompt = f"""
 Compare the climate between {req.origin} and {req.destination} in {req.month} based on this data:
@@ -86,7 +87,6 @@ Compare the climate between {req.origin} and {req.destination} in {req.month} ba
 
 Summarize how they compare in terms of heat and comfort.
 """
-
         gpt_response = openai.ChatCompletion.create(
             model="gpt-4",
             messages=[
@@ -97,9 +97,10 @@ Summarize how they compare in terms of heat and comfort.
         summary = gpt_response["choices"][0]["message"]["content"]
         print("✅ GPT responded.")
     except Exception as e:
-        print("❌ GPT API error:", e)
+        print("❌ OpenAI error:", e)
         return {"error": f"OpenAI API error: {str(e)}"}
 
+    # Return everything
     return {
         "summary": summary,
         "origin_data": origin_data,
