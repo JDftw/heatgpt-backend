@@ -43,19 +43,31 @@ def get_weather_data(lat, lon, month):
         "timezone": "auto"
     }).json()
 
+from datetime import datetime
+
 @app.post("/compare")
 def compare(req: CompareRequest):
+    # Convert month name to number (e.g., July -> 07)
+    try:
+        month_number = datetime.strptime(req.month, "%B").month
+        month_str = str(month_number).zfill(2)
+    except ValueError:
+        return {"error": "Invalid month format. Use full month name like 'July'."}
+
     origin_coords = get_coords(req.origin)
     dest_coords = get_coords(req.destination)
 
     if not origin_coords or not dest_coords:
         return {"error": "Unable to find coordinates for one of the locations."}
 
-    origin_data = get_weather_data(*origin_coords, req.month)
-    destination_data = get_weather_data(*dest_coords, req.month)
+    try:
+        origin_data = get_weather_data(*origin_coords, month_str)
+        destination_data = get_weather_data(*dest_coords, month_str)
+    except Exception as e:
+        return {"error": f"Failed to fetch weather data: {str(e)}"}
 
-    # Build GPT prompt
-    gpt_prompt = f"""
+    try:
+        gpt_prompt = f"""
 Compare the climate between {req.origin} and {req.destination} in {req.month} based on this data:
 
 {req.origin} max temps: {origin_data['daily']['temperature_2m_max'][:5]}
@@ -64,15 +76,16 @@ Compare the climate between {req.origin} and {req.destination} in {req.month} ba
 Summarize how they compare in terms of heat and comfort.
 """
 
-    gpt_response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[
-            {"role": "system", "content": "You're a helpful weather assistant."},
-            {"role": "user", "content": gpt_prompt}
-        ]
-    )
-
-    summary = gpt_response["choices"][0]["message"]["content"]
+        gpt_response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You're a helpful weather assistant."},
+                {"role": "user", "content": gpt_prompt}
+            ]
+        )
+        summary = gpt_response["choices"][0]["message"]["content"]
+    except Exception as e:
+        return {"error": f"OpenAI API error: {str(e)}"}
 
     return {
         "summary": summary,
