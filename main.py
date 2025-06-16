@@ -11,12 +11,13 @@ from dotenv import load_dotenv
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# Create FastAPI app
 app = FastAPI()
 
-# Enable CORS (for frontend access like CodePen or local dev)
+# ✅ Proper CORS middleware to fix 405 OPTIONS error
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # You can restrict this to your frontend domain later
+    allow_origins=["*"],  # You can change this to your frontend domain later
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,7 +29,7 @@ class CompareRequest(BaseModel):
     destination: str
     month: str
 
-# Get coordinates using Open-Meteo's geocoding API
+# Get coordinates using Open-Meteo geocoding API
 def get_coords(place):
     res = requests.get("https://geocoding-api.open-meteo.com/v1/search", params={"name": place})
     results = res.json().get("results")
@@ -36,7 +37,7 @@ def get_coords(place):
         return None
     return results[0]["latitude"], results[0]["longitude"]
 
-# Get historical temperature data
+# Fetch historical temperature data
 def get_weather_data(lat, lon, month_str):
     return requests.get("https://archive-api.open-meteo.com/v1/archive", params={
         "latitude": lat,
@@ -47,45 +48,42 @@ def get_weather_data(lat, lon, month_str):
         "timezone": "auto"
     }).json()
 
-# Compare endpoint
+# Main route: compare climate
 @app.post("/compare")
 def compare(req: CompareRequest):
-    print("🔍 Received request:", req.dict())
+    print("🔍 Request received:", req.dict())
 
-    # Convert month to MM format
+    # Convert month name to number
     try:
         month_number = datetime.strptime(req.month, "%B").month
         month_str = str(month_number).zfill(2)
     except ValueError as e:
-        print("❌ Invalid month format:", e)
-        return {"error": "Invalid month. Use full name like 'July'."}
+        print("❌ Invalid month:", e)
+        return {"error": "Invalid month format. Use full name like 'July'."}
 
-    # Geocode both locations
     origin_coords = get_coords(req.origin)
     dest_coords = get_coords(req.destination)
 
     if not origin_coords or not dest_coords:
-        print("❌ Geocoding failed.")
+        print("❌ Geocoding failed")
         return {"error": "Could not find coordinates for one or both locations."}
 
-    # Fetch weather data
     try:
         origin_data = get_weather_data(*origin_coords, month_str)
         destination_data = get_weather_data(*dest_coords, month_str)
-        print("✅ Weather data fetched.")
+        print("✅ Weather data fetched")
     except Exception as e:
-        print("❌ Weather API error:", e)
-        return {"error": f"Weather data fetch failed: {str(e)}"}
+        print("❌ Weather data error:", e)
+        return {"error": f"Failed to fetch weather data: {str(e)}"}
 
-    # Ask GPT to compare them
     try:
         gpt_prompt = f"""
-Compare the climate between {req.origin} and {req.destination} in {req.month} based on this data:
+Compare the climate between {req.origin} and {req.destination} in {req.month} using the data below.
 
 {req.origin} max temps: {origin_data['daily'].get('temperature_2m_max', [])[:5]}
 {req.destination} max temps: {destination_data['daily'].get('temperature_2m_max', [])[:5]}
 
-Summarize how they compare in terms of heat and comfort.
+Summarize the heat and comfort differences in plain English.
 """
         gpt_response = openai.ChatCompletion.create(
             model="gpt-4",
@@ -95,12 +93,11 @@ Summarize how they compare in terms of heat and comfort.
             ]
         )
         summary = gpt_response["choices"][0]["message"]["content"]
-        print("✅ GPT responded.")
+        print("✅ GPT response complete")
     except Exception as e:
-        print("❌ OpenAI error:", e)
+        print("❌ GPT error:", e)
         return {"error": f"OpenAI API error: {str(e)}"}
 
-    # Return everything
     return {
         "summary": summary,
         "origin_data": origin_data,
